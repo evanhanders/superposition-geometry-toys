@@ -62,11 +62,13 @@ class AutoEncoderConfig:
     #Resampling protocol
     use_resampling: bool = False
     neuron_resample_window: int = 100
-    neuron_resample_scale: float = 0.2
+    neuron_resample_scale: float = 0.5
     use_ghost_grads: bool = True
     ghost_grads_cooldown: int = 1000
     dead_feature_window: int = 400  # unless this window is larger feature sampling,
     dead_feature_threshold: float = 1e-6
+    ghost_revivals: bool = False
+    ghost_revival_count: int = 5
 
     # WANDB
     log_to_wandb: bool = False
@@ -346,6 +348,8 @@ class AutoEncoder(nn.Module):
         act_freq_scores = t.zeros((self.cfg.n_inst, self.cfg.d_sae), device=device)
         n_forward_passes_since_fired = t.zeros((self.cfg.n_inst, self.cfg.d_sae), device=device)
         ghost_grads_cooldown = t.zeros((self.cfg.n_inst, self.cfg.d_sae), dtype=t.long).to(device)
+        ghost_revival_counter = t.zeros((self.cfg.n_inst, self.cfg.d_sae), dtype=t.long).to(device)
+        ghost_revival_toggle = t.zeros((self.cfg.n_inst, self.cfg.d_sae), dtype=t.bool).to(device)
         cooldown = t.ones_like(ghost_grads_cooldown)
         n_frac_active_tokens = 0
 
@@ -429,17 +433,30 @@ class AutoEncoder(nn.Module):
             ghost_grads_cooldown[t.logical_not(dead_neuron_mask)] -= 1
             ghost_grads_cooldown[ghost_grads_cooldown < 0] = 0
 
+
+            # Revive ghost neurons
+            revival_mask = (ghost_revival_counter == self.cfg.ghost_revival_count)
+            if self.cfg.ghost_revivals and revival_mask.any():
+                # Resample
+                self.resample_neurons(h, revival_mask, self.cfg.neuron_resample_scale)
+                ghost_revival_counter[revival_mask] = 0
+
             # Resample dead neurons
             if self.cfg.use_resampling and ((step + 1) % self.cfg.neuron_resample_window == 0):
                 # Resample
                 self.resample_neurons(h, dead_neuron_mask, self.cfg.neuron_resample_scale)
 
-
             # Optimize
             optimizer.zero_grad()
             if self.cfg.ghost_grads_cooldown > 0:
                 cooldown[:] = 1 - ghost_grads_cooldown/self.cfg.ghost_grads_cooldown
+
+            #If a feature is toggled off (it was alive on previous iteration) but it's now dead (ghost_mask=True), add 1 to ghost revival counter
+            ghost_revival_counter[t.logical_and(t.logical_not(ghost_revival_toggle), dead_neuron_mask)] += 1
+            #note that this feature is turned on for the future.
+            ghost_revival_toggle[dead_neuron_mask] = True
             loss, h_reconstruct, acts, mse_loss, l1_loss, mse_loss_ghost_resid = self.forward(h, dead_neuron_mask, cooldown)
+
 
             #
             did_fire = ((acts > self.cfg.dead_feature_threshold).float().sum(1) > 0)
