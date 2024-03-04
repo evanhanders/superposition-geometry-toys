@@ -333,6 +333,7 @@ class AutoEncoder(nn.Module):
         model,
         log_bump: float = 1.02,
         plot=True,
+        plot_cadence=100,
         rootdir: pathlib.Path = pathlib.Path('./')
         ):
         """
@@ -471,7 +472,7 @@ class AutoEncoder(nn.Module):
             progress_bar.update()
 
             with t.no_grad():
-                if plot and (step+1) % 100 == True:
+                if plot and (step+1) % plot_cadence == True:
                     plotter.update(model, autoencoder=self)
                 # Calculate the sparsities, and add it to a list, calculate sparsity metrics
                 act_freq_scores += (acts.abs() > 0).float().sum(1)

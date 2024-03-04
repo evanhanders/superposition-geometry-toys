@@ -226,12 +226,12 @@ class TMSPlotter():
                 #Update
                 if autoencoder is None:
                     self.im.set_data(cossim.squeeze())
-                    self.axs[0].set_yticks(range(len(args)), labels=[a.item() for a in args])
+                    self.axs[0].set_xticks(range(len(args)), labels=[a.item() for a in args])
                 else:
                     self.im1.set_data(cossim.squeeze())
-                    self.axs[0].set_yticks(range(args.shape[0]), labels=[a.item() for a in args])
+                    self.axs[0].set_xticks(range(args.shape[0]), labels=[a.item() for a in args])
                     self.im2.set_data(actvecs.squeeze())
-                    self.axs[1].set_yticks(range(argsacts.shape[0]), labels=[a.item() for a in argsacts])
+                    self.axs[1].set_xticks(range(argsacts.shape[0]), labels=[a.item() for a in argsacts])
                 
                 if autoencoder is None and model.train_log is not None:
                     self.loss_lines[0].set_xdata(model.train_log['steps'])
