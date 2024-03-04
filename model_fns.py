@@ -29,7 +29,7 @@ class ToyModelConfig:
 
     #composed features cfg options
     feat_sets: list = None
-    correlate_set_magnitudes: bool = False
+    set_magnitude_correlation: float = 0
 
 
     #Training parameters
@@ -151,13 +151,14 @@ class ComposedFeatureTMS(TMS):
 
             indices = [d.sample(sample_shape=(batch_size,1)) + o for d,o in zip(self.feat_distributions, self.feat_set_offsets)]
             self.features = t.zeros((batch_size, self.cfg.input_size))
-            if self.cfg.correlate_set_magnitudes:
-                randvals = t.rand(batch_size, 1)
-            for idx in indices:
-                if self.cfg.correlate_set_magnitudes:
-                    self.features.scatter_(dim=1, index=idx, src=randvals)
-                else:
-                    self.features.scatter_(dim=1, index=idx, src=t.rand(batch_size, 1))
+        
+
+            randvals = t.rand(batch_size, len(self.feat_sets))
+            f = self.cfg.set_magnitude_correlation
+            #if f = 0, then keep current value; if f = 1, then use mean.
+            randvals = (1-f) * randvals + f * t.mean(randvals, dim=1, keepdim=True)
+            for i,idx in enumerate(indices):
+                self.features.scatter_(dim=1, index=idx, src=randvals[:,i][:,None])
         return self.features.to(device)
 
 
