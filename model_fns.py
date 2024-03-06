@@ -29,6 +29,7 @@ class ToyModelConfig:
 
     #composed features cfg options
     feat_sets: list = None
+    active_features_per_draw: int = 1
     set_magnitude_correlation: float = 0
     correlated_feature_indices: list = None
     correlated_feature_boost: float = 0 #ranges from 0 to 1.
@@ -201,22 +202,28 @@ class ComposedFeatureTMS(TMS):
             if batch_size is None:
                 batch_size = self.cfg.batch_size
 
-            idx = self.feat_sampler.sample(sample_shape=(batch_size,))
-            indices = self.feat_indices[idx][...,None]
             self.features = t.zeros((batch_size, self.cfg.input_size))
-            randvals = t.rand(batch_size, len(self.feat_sets))
+            randvals = t.rand(batch_size, len(self.feat_sets), self.cfg.active_features_per_draw)
 
             f = self.cfg.set_magnitude_correlation
             #if f = 0, then keep current value; if f = 1, then use set 0 value.
             for i in range(len(self.feat_sets) - 1):
                 randvals[:,i+1] = (1-f)*randvals[:,i+1] + f*randvals[:,0]
 
-            if len(self.feat_sets) == 1:
-                self.features.scatter_(dim=1, index=indices, src=randvals)
-            else:
-                for i in range(indices.shape[1]):
-                    idx = indices[:,i]
-                    self.features.scatter_(dim=1, index=idx, src=randvals[:,i][:,None])
+
+            for draw in range(self.cfg.active_features_per_draw):
+                idx = self.feat_sampler.sample(sample_shape=(batch_size,))
+                indices = self.feat_indices[idx][...,None]
+
+                feats = t.zeros((batch_size, self.cfg.input_size))
+
+                if len(self.feat_sets) == 1:
+                    feats.scatter_(dim=1, index=indices, src=randvals[...,draw])
+                else:
+                    for i in range(indices.shape[1]):
+                        idx = indices[:,i]
+                        feats.scatter_(dim=1, index=idx, src=randvals[:,i,draw][:,None])
+                self.features += feats
         return self.features.to(device)
 
 
