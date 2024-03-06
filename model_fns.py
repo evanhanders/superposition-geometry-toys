@@ -17,7 +17,6 @@ from IPython.display import display, clear_output
 
 device = t.device('cuda' if t.cuda.is_available() else 'cpu')
 
-
 @dataclass
 class ToyModelConfig:
     input_size: int = 6
@@ -26,11 +25,13 @@ class ToyModelConfig:
     #uncorrelated / correlated / anticorrelated cfg options
     feat_set_size: int = 1
     sparsity: Callable = lambda x: 0.1
+    disallow_zeros: bool = False
 
     #composed features cfg options
     feat_sets: list = None
     set_magnitude_correlation: float = 0
-
+    correlated_feature_indices: list = None
+    correlated_feature_boost: float = 0 #ranges from 0 to 1.
 
     #Training parameters
     batches: int = 1000
@@ -110,8 +111,13 @@ class UncorrelatedTMS(TMS):
                 batch_size = self.cfg.batch_size
 
             s = t.rand(batch_size, self.cfg.input_size)
+            sparse_mask = s < self.S[None,:]
+            if self.cfg.disallow_zeros:
+                zeros = sparse_mask.sum(dim=1) == 0
+                max_indices = t.argmax(s, dim=1)
+                sparse_mask[zeros][max_indices[zeros]] = True
             self.features = t.rand(batch_size, self.cfg.input_size)
-            self.features[s < self.S[None,:]] = 0 #make sparse
+            self.features[sparse_mask] = 0 #make sparse
         return self.features.to(device)
 
 
@@ -121,24 +127,70 @@ class ComposedFeatureTMS(TMS):
         super(ComposedFeatureTMS, self).__init__(cfg)
         if self.cfg.feat_sets is None:
             raise ValueError("Must set config feat_sets list for Composed Features Model")
-        self.feat_sets = self.cfg.feat_sets
         self.feat_sets = cfg.feat_sets
         self.I = cfg.importance(self.cfg.input_size)
 
-        feat_probs = []
-        self.feat_distributions = []
-        self.feat_set_offsets = [0]
-        for i, size in enumerate(self.feat_sets):
-            if i > 0:
-                self.feat_set_offsets += [self.feat_set_offsets[-1] + self.feat_sets[i-1]]
-            feat_probs.append([])
-            for j in range(size):
-                feat_probs[i].append(self.cfg.sparsity(j))
-            feat_probs[i] = t.Tensor(feat_probs[i])
-            feat_probs[i] /= t.sum(feat_probs[i]) #normalize
-            self.feat_distributions.append(t.distributions.categorical.Categorical(feat_probs[i]))
-        print('probabilities: {}'.format(feat_probs))
+        #Uniform probability table.
+        feat_probs = t.zeros(self.feat_sets)
+        if len(self.feat_sets) == 1:
+            feat_probs = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[0])])
+            self.feat_probs = feat_probs/t.sum(feat_probs)
+            if self.cfg.correlated_feature_indices is not None:
+                idx = self.cfg.correlated_feature_indices[0]
+                prior_remaining_prob = (1-self.feat_probs[idx])
+                self.feat_probs[idx] += self.cfg.correlated_feature_boost*(prior_remaining_prob)
+                remaining_prob = (1-self.feat_probs[idx])
+                for i in range(self.feat_sets[0]):
+                    if i != idx:
+                        self.feat_probs[i] *= remaining_prob/prior_remaining_prob
+            print('probability table: {}'.format(self.feat_probs))
+            self.feat_indices = t.arange(self.feat_sets[0])
+        elif len(self.feat_sets) == 2:
+            baseline_0 = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[0])])
+            baseline_1 = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[1])])
+            feat_probs[:,0] = baseline_0
+            for i in range(self.feat_sets[0]):
+                feat_probs[i,:] = baseline_1 * (baseline_0[i] / baseline_1[0])
+            self.feat_probs = feat_probs/t.sum(feat_probs) #normalizeself.feat_probs = feat_probs.ravel()
+            if self.cfg.correlated_feature_indices is not None:
+                original_feat_probs = self.feat_probs.clone()
+                (idx0, idx1) = self.cfg.correlated_feature_indices
+                rowprob = self.feat_probs[idx0].sum()
+                colprob = self.feat_probs[:,idx1].sum()
+                prior_remaining_rowprob = rowprob-self.feat_probs[idx0,idx1]
+                prior_remaining_colprob = colprob-self.feat_probs[idx0,idx1]
+                prior_remaining_prob = min(prior_remaining_rowprob, prior_remaining_colprob)
+                self.feat_probs[idx0,idx1] += self.cfg.correlated_feature_boost*(prior_remaining_prob)
+                remaining_rowprob = (rowprob-self.feat_probs[idx0,idx1]).sum()
+                remaining_colprob = (colprob-self.feat_probs[idx0,idx1]).sum()
+                
+                #update messed-with feature's row and column probabilities
+                for i in range(self.feat_sets[1]):
+                    if i != idx1:
+                        self.feat_probs[idx0,i] *= remaining_colprob/prior_remaining_colprob
+                for j in range(self.feat_sets[0]):
+                    if j != idx0:
+                        self.feat_probs[j,idx1] *= remaining_rowprob/prior_remaining_rowprob
+
+                #update off-row probabilities
+                for i in range(self.feat_sets[0]):
+                    if i == idx0: continue
+                    new_rowprob = self.feat_probs[i].sum()
+                    adjustable_rowprob = new_rowprob - self.feat_probs[i,idx1]
+                    unaccounted_prob = (original_feat_probs[i].sum()-new_rowprob)
+
+                    factor = 1 + unaccounted_prob/adjustable_rowprob
+                    for j in range(self.feat_sets[1]):
+                        if j == idx1: continue
+                        self.feat_probs[i,j] *= factor
+            print('probability table: \n{}'.format(self.feat_probs))
+            self.feat_probs = self.feat_probs.ravel()
+            self.feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(self.feat_probs.shape[0])]).long()
+            
+        else:
+            raise NotImplementedError("ComposedFeatureTMS only implemented for case with <= 2 feature sets")
         
+        self.feat_sampler = t.distributions.categorical.Categorical(self.feat_probs)
 
     def get_batch(self, batch_size: int = None,
                   identity=False,
@@ -149,16 +201,22 @@ class ComposedFeatureTMS(TMS):
             if batch_size is None:
                 batch_size = self.cfg.batch_size
 
-            indices = [d.sample(sample_shape=(batch_size,1)) + o for d,o in zip(self.feat_distributions, self.feat_set_offsets)]
+            idx = self.feat_sampler.sample(sample_shape=(batch_size,))
+            indices = self.feat_indices[idx][...,None]
             self.features = t.zeros((batch_size, self.cfg.input_size))
-        
-
             randvals = t.rand(batch_size, len(self.feat_sets))
+
             f = self.cfg.set_magnitude_correlation
-            #if f = 0, then keep current value; if f = 1, then use mean.
-            randvals = (1-f) * randvals + f * t.mean(randvals, dim=1, keepdim=True)
-            for i,idx in enumerate(indices):
-                self.features.scatter_(dim=1, index=idx, src=randvals[:,i][:,None])
+            #if f = 0, then keep current value; if f = 1, then use set 0 value.
+            for i in range(len(self.feat_sets) - 1):
+                randvals[:,i+1] = (1-f)*randvals[:,i+1] + f*randvals[:,0]
+
+            if len(self.feat_sets) == 1:
+                self.features.scatter_(dim=1, index=indices, src=randvals)
+            else:
+                for i in range(indices.shape[1]):
+                    idx = indices[:,i]
+                    self.features.scatter_(dim=1, index=idx, src=randvals[:,i][:,None])
         return self.features.to(device)
 
 
