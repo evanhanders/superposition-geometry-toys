@@ -39,7 +39,7 @@ def w_cossim(W1, W2, sort=None):
     return cossim[:,argsort].detach().cpu(), argsort.detach().cpu()
 
 @t.no_grad()
-def w_enc(model, encoder, sort=None):
+def w_enc(model, encoder, sort=None, instance=None):
     """
     Returns encoding-space vectors of a identitiy matrix of feature inputs.
         TODO: add monosemanticity_target (assumed = 1 right now).
@@ -53,13 +53,14 @@ def w_enc(model, encoder, sort=None):
         term2 = 0
     term3 = encoder.b_enc[:,None,:]
     actvecs = F.relu(term1 + term2 + term3)
-    monosemanticity = encoder.measure_monosemanticity(model)
-    instance = t.argmax(monosemanticity).item()
+    if instance is None:
+        monosemanticity = encoder.measure_monosemanticity(model)
+        instance = t.argmax(monosemanticity).item()
     if sort is None:
         # maybe try a weighted sum: maxs = top-k with k = 5 or something
         # take sum(maxs.values*max.indices)/sum(maxs.values) to get avg index.
         # sort by that weighted sum. Might give something semidiagonal?
-        maxs = t.topk(actvecs[instance], dim=0, k=5)
+        maxs = t.topk(actvecs[instance], dim=0, k=actvecs[instance].shape[0]//2)
         avg_index = t.sum(maxs.values*maxs.indices, dim=0)/t.sum(maxs.values, dim=0)
         argsort = t.argsort(avg_index)
         returnval = actvecs[instance,:, argsort]
@@ -221,6 +222,8 @@ class TMSPlotter():
                 else:
                     self.im1 = self.axs[0].imshow(cossim.squeeze(), cmap='RdYlBu_r', vmin=-1, vmax=1)
                     self.im2 = self.axs[1].imshow(actvecs.squeeze(), cmap='viridis', vmin=0, vmax=1)
+                    # self.axs[0].set_xlim(-0.5, min(cossim.shape)-0.5)
+                    # self.axs[1].set_xlim(-0.5, min(actvecs.shape)-0.5)
                 self.initialized = True
             else:
                 #Update
@@ -232,6 +235,8 @@ class TMSPlotter():
                     self.axs[0].set_xticks(range(args.shape[0]), labels=[a.item() for a in args])
                     self.im2.set_data(actvecs.squeeze())
                     self.axs[1].set_xticks(range(argsacts.shape[0]), labels=[a.item() for a in argsacts])
+                    # self.axs[0].set_xlim(-0.5, min(cossim.shape)-0.5)
+                    # self.axs[1].set_xlim(-0.5, min(actvecs.shape)-0.5)
                 
                 if autoencoder is None and model.train_log is not None:
                     self.loss_lines[0].set_xdata(model.train_log['steps'])

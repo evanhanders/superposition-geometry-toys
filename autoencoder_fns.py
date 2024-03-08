@@ -49,15 +49,21 @@ class AutoEncoderConfig:
 
     #Training Parameters
     seed: int = None
-    training_samples: int = 32_000_000
+    training_samples: int = 128_000_000
     batch_size: int = 1024
     lr: float = 3e-4
     l1_coeff: float = 1e-1
     lr_scheduler_name: str = "constant_with_warmup_and_cooldown" # "constant" "constant_with_warmup" "constant_with_warmup_and_cooldown"
     lr_warmup_frac: int = 0.1
     lr_cooldown_frac: float = 0.2
-    adam_beta1: float = 0.9
+    adam_beta1: float = 0
     adam_beta2: float = 0.999
+
+    #Janky training stuff
+    dropout_prob: int = 0
+    do_random_penalty: bool = False 
+    penalization_weights: list = None #TODO: define with default_factory
+    noise_scale: float = 0
 
     #Resampling protocol
     use_resampling: bool = False
@@ -98,6 +104,9 @@ class AutoEncoderConfig:
 
         if self.use_resampling and self.use_ghost_grads:
             raise ValueError("Cannot use both resampling and ghost grads")
+    
+        if self.do_random_penalty and self.penalization_weights is None:
+            self.penalization_weights = [0.5, 1]
 
 class AutoEncoder(nn.Module):
     """
@@ -117,6 +126,7 @@ class AutoEncoder(nn.Module):
         self.W_dec = nn.Parameter(t.nn.init.kaiming_uniform_(t.empty(cfg.n_inst, cfg.d_sae, cfg.d_in, dtype=cfg.dtype)))
         self.b_dec = nn.Parameter(t.zeros((cfg.n_inst, cfg.d_in), dtype=cfg.dtype))
         self.normalize_decoder()
+        
 
     @t.no_grad()
     def normalize_decoder(self) -> None:
@@ -152,12 +162,16 @@ class AutoEncoder(nn.Module):
         - mse_loss_ghost_resid: The mean squared error loss of the ghost residuals
         """
         x = x.to(self.cfg.dtype)
+        noise = t.normal(0, x.std()*self.cfg.noise_scale, size=x.shape, device=device, dtype=self.cfg.dtype)
+        # x = x + noise
         if self.cfg.pre_encoder_bias:
             x_cent = x[None,:] - self.b_dec[:,None,:]
-            pre = einops.einsum(x_cent, self.W_enc, "n_inst batch d_in, n_inst d_in d_sae -> n_inst batch d_sae") + self.b_enc[:,None,:]
+            pre = einops.einsum(x_cent + noise, self.W_enc, "n_inst batch d_in, n_inst d_in d_sae -> n_inst batch d_sae") + self.b_enc[:,None,:]
         else:
-            pre = einops.einsum(x, self.W_enc, "batch d_in, n_inst d_in d_sae -> n_inst batch d_sae") + self.b_enc[:,None,:]
+            pre = einops.einsum(x + noise, self.W_enc, "batch d_in, n_inst d_in d_sae -> n_inst batch d_sae") + self.b_enc[:,None,:]
         acts = F.relu(pre)
+        if self.cfg.dropout_prob > 0:
+            acts = F.dropout(acts, p=self.cfg.dropout_prob, training=self.training)
         x_reconstruct = einops.einsum(acts, self.W_dec, "n_inst batch d_sae, n_inst d_sae d_in -> n_inst batch d_in") + self.b_dec[:,None,:]
 
         if self.cfg.normalize_in_l2:
@@ -213,6 +227,11 @@ class AutoEncoder(nn.Module):
             sparsity = t.abs(ghost_grad_cooldown[:,None,:]*acts).sum(dim=-1, keepdim=True)#.mean(dim=(0,))
         else:
             sparsity = t.abs(acts).sum(dim=-1, keepdim=True)
+
+        if self.training and self.cfg.do_random_penalty:
+            penalty_weights = self.cfg.penalization_weights[0] + self.cfg.penalization_weights[1]*t.rand_like(sparsity)
+            sparsity = sparsity * penalty_weights       
+
         l1_loss = self.l1_coeff * sparsity
         loss = (mse_loss + l1_loss + mse_loss_ghost_resid).mean()
         return loss, x_reconstruct, acts, mse_loss.mean(), l1_loss.mean(), mse_loss_ghost_resid.mean()
