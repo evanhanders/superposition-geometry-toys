@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import pathlib
 
 import torch as t
 from torch import nn, Tensor
@@ -48,6 +49,9 @@ class ToyModelConfig:
             self.input_size = 0
             for i in self.feat_sets:
                 self.input_size += i
+        
+        self.run_name = f"tms_nin{self.input_size}nhid{self.hidden_size}_numfeatsdraw{self.feat_set_size}_magnitude_corr{self.set_magnitude_correlation}_correlated_feature_boost{self.correlated_feature_boost}"
+
 
 class TMS(nn.Module):
     def __init__(self, cfg):
@@ -70,7 +74,7 @@ class TMS(nn.Module):
     def get_batch(self, *args, **kwargs):
         raise NotImplementedError("Must be implemented in children classes")
     
-    def train(self):
+    def train(self, outdir: pathlib.Path = None):
         optimizer = optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.wd)
 
         plotter = TMSPlotter()
@@ -93,7 +97,20 @@ class TMS(nn.Module):
 
             if i % 200 == 0:
                 plotter.update(self)
+        
+        if outdir is not None:
+            self.save(outdir, self.cfg.run_name)
         clear_output()
+
+    def save(self, dir: pathlib.Path, run_name: str):
+        """ Saves model weights, projection vector, and training dynamics """
+        weights_fname = dir/f'weights_{run_name}.pt'
+        t.save(self.state_dict(), weights_fname)
+
+    def load(self, dir: pathlib.Path, run_name: str) -> dict:
+        """ Loads model weights, projection vector, and training dynamics """
+        weights_fname = dir/f'weights_{run_name}.pt'
+        self.load_state_dict(t.load(weights_fname, map_location=device))
 
 class UncorrelatedTMS(TMS):
 

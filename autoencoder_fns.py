@@ -42,6 +42,7 @@ class AutoEncoderConfig:
     pre_encoder_bias: bool = False
     normalize_in_l2: bool = True
     normalize_to_lesseq_one: bool = False
+    include_cossim_penalty: bool = False
     n_inst: int = 1
     dict_mult: int = 8
     d_in: int = 1024
@@ -53,6 +54,7 @@ class AutoEncoderConfig:
     batch_size: int = 1024
     lr: float = 3e-4
     l1_coeff: float = 1e-1
+    cossim_coeff: float = 1
     lr_scheduler_name: str = "constant_with_warmup_and_cooldown" # "constant" "constant_with_warmup" "constant_with_warmup_and_cooldown"
     lr_warmup_frac: int = 0.1
     lr_cooldown_frac: float = 0.2
@@ -233,6 +235,11 @@ class AutoEncoder(nn.Module):
             sparsity = sparsity * penalty_weights       
 
         l1_loss = self.l1_coeff * sparsity
+        if self.cfg.include_cossim_penalty:
+            normed_W_dec = self.W_dec / t.norm(self.W_dec, dim=-1, keepdim=True)
+            cossim = einops.einsum(normed_W_dec, normed_W_dec, "n_inst d_sae1 d_in, n_inst d_sae2 d_in -> n_inst d_sae1 d_sae2")
+            # The matrix is symmetric, so we just take the tril part.
+            l1_loss += self.cfg.cossim_coeff*t.abs(t.tril(cossim)).mean((-1,-2))[:,None,None]
         loss = (mse_loss + l1_loss + mse_loss_ghost_resid).mean()
         return loss, x_reconstruct, acts, mse_loss.mean(), l1_loss.mean(), mse_loss_ghost_resid.mean()
 
