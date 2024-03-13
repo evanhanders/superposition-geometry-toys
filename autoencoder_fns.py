@@ -42,7 +42,6 @@ class AutoEncoderConfig:
     pre_encoder_bias: bool = False
     normalize_in_l2: bool = True
     normalize_to_lesseq_one: bool = False
-    include_cossim_penalty: bool = False
     n_inst: int = 1
     dict_mult: int = 8
     d_in: int = 1024
@@ -54,7 +53,6 @@ class AutoEncoderConfig:
     batch_size: int = 1024
     lr: float = 3e-4
     l1_coeff: float = 1e-1
-    cossim_coeff: float = 1
     lr_scheduler_name: str = "constant_with_warmup_and_cooldown" # "constant" "constant_with_warmup" "constant_with_warmup_and_cooldown"
     lr_warmup_frac: int = 0.1
     lr_cooldown_frac: float = 0.2
@@ -66,6 +64,8 @@ class AutoEncoderConfig:
     do_random_penalty: bool = False 
     penalization_weights: list = None #TODO: define with default_factory
     noise_scale: float = 0
+    include_cossim_penalty: bool = False
+    cossim_coeff: float = 1
 
     #Resampling protocol
     use_resampling: bool = False

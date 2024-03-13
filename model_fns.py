@@ -34,6 +34,7 @@ class ToyModelConfig:
     set_magnitude_correlation: float = 0
     correlated_feature_indices: list = None
     correlated_feature_boost: float = 0 #ranges from 0 to 1.
+    onehot_probability: float = 0
 
     #Training parameters
     batches: int = 1000
@@ -50,7 +51,7 @@ class ToyModelConfig:
             for i in self.feat_sets:
                 self.input_size += i
         
-        self.run_name = f"tms_nin{self.input_size}nhid{self.hidden_size}_numfeatsdraw{self.feat_set_size}_magnitude_corr{self.set_magnitude_correlation}_correlated_feature_boost{self.correlated_feature_boost}"
+        self.run_name = f"tms_nin{self.input_size}nhid{self.hidden_size}_numfeatsdraw{self.feat_set_size}_magnitude_corr{self.set_magnitude_correlation}_correlated_feature_boost{self.correlated_feature_boost}_onehot{self.onehot_probability:.2f}"
 
 
 class TMS(nn.Module):
@@ -149,7 +150,10 @@ class ComposedFeatureTMS(TMS):
         self.I = cfg.importance(self.cfg.input_size)
 
         #Uniform probability table.
-        feat_probs = t.zeros(self.feat_sets)
+        if self.cfg.onehot_probability > 0 and len(self.feat_sets) > 1:
+            feat_probs = t.zeros([s + 1 for s in self.feat_sets])
+        else:
+            feat_probs = t.zeros(self.feat_sets)
         if len(self.feat_sets) == 1:
             feat_probs = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[0])])
             self.feat_probs = feat_probs/t.sum(feat_probs)
@@ -166,9 +170,9 @@ class ComposedFeatureTMS(TMS):
         elif len(self.feat_sets) == 2:
             baseline_0 = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[0])])
             baseline_1 = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[1])])
-            feat_probs[:,0] = baseline_0
+            feat_probs[:self.feat_sets[0],0] = baseline_0
             for i in range(self.feat_sets[0]):
-                feat_probs[i,:] = baseline_1 * (baseline_0[i] / baseline_1[0])
+                feat_probs[i,:self.feat_sets[1]] = baseline_1 * (baseline_0[i] / baseline_1[0])
             self.feat_probs = feat_probs/t.sum(feat_probs) #normalizeself.feat_probs = feat_probs.ravel()
             if self.cfg.correlated_feature_indices is not None:
                 original_feat_probs = self.feat_probs.clone()
@@ -201,9 +205,30 @@ class ComposedFeatureTMS(TMS):
                     for j in range(self.feat_sets[1]):
                         if j == idx1: continue
                         self.feat_probs[i,j] *= factor
+
+                # Adjust for one-hot-ness
+                if self.cfg.onehot_probability > 0:
+                    self.feat_probs *= (1-self.cfg.onehot_probability)
+                    norm_baseline_0 = baseline_0/t.sum(baseline_0)
+                    norm_baseline_1 = baseline_1/t.sum(baseline_1)
+                    self.feat_probs[:self.feat_sets[0],-1] = self.cfg.onehot_probability*norm_baseline_0*self.feat_sets[0]/np.sum(self.feat_sets)
+                    self.feat_probs[-1,:self.feat_sets[1]] = self.cfg.onehot_probability*norm_baseline_1*self.feat_sets[1]/np.sum(self.feat_sets)
             print('probability table: \n{}'.format(self.feat_probs))
-            self.feat_probs = self.feat_probs.ravel()
-            self.feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(self.feat_probs.shape[0])]).long()
+            if self.cfg.onehot_probability > 0 and len(self.feat_sets) > 1:
+                if len(self.feat_sets) > 2:
+                    raise NotImplementedError("One-hot probability only implemented for 2 feature sets")
+                onehot_set1_probs = self.feat_probs[:self.feat_sets[0], -1]
+                onehot_set2_probs = self.feat_probs[-1, :self.feat_sets[1]]
+                self.feat_probs = self.feat_probs[:self.feat_sets[0],:self.feat_sets[1]].ravel()
+                self.feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(self.feat_probs.shape[0])]).long()
+                onehot_set1_indices = t.arange(self.feat_sets[0]).repeat_interleave(2).reshape(self.feat_sets[0], 2)
+                onehot_set2_indices = self.feat_sets[0] + t.arange(self.feat_sets[1]).repeat_interleave(2).reshape(self.feat_sets[1], 2)
+                self.feat_probs = t.cat([self.feat_probs.ravel(), onehot_set1_probs, onehot_set2_probs])
+                self.feat_indices = t.cat([self.feat_indices, onehot_set1_indices, onehot_set2_indices], dim=0)
+            else:
+                self.feat_probs = self.feat_probs.ravel()
+                self.feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(self.feat_probs.shape[0])]).long()
+            # print(self.feat_probs, self.feat_indices)
             
         else:
             raise NotImplementedError("ComposedFeatureTMS only implemented for case with <= 2 feature sets")
