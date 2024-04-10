@@ -165,7 +165,6 @@ class ComposedFeatureTMS(TMS):
                 for i in range(self.feat_sets[0]):
                     if i != idx:
                         self.feat_probs[i] *= remaining_prob/prior_remaining_prob
-            print('probability table: {}'.format(self.feat_probs))
             self.feat_indices = t.arange(self.feat_sets[0])
         elif len(self.feat_sets) == 2:
             baseline_0 = t.Tensor([cfg.sparsity(i) for i in range(self.feat_sets[0])])
@@ -213,18 +212,23 @@ class ComposedFeatureTMS(TMS):
                     norm_baseline_1 = baseline_1/t.sum(baseline_1)
                     self.feat_probs[:self.feat_sets[0],-1] = self.cfg.onehot_probability*norm_baseline_0*self.feat_sets[0]/np.sum(self.feat_sets)
                     self.feat_probs[-1,:self.feat_sets[1]] = self.cfg.onehot_probability*norm_baseline_1*self.feat_sets[1]/np.sum(self.feat_sets)
-            print('probability table: \n{}'.format(self.feat_probs))
+            
             if self.cfg.onehot_probability > 0 and len(self.feat_sets) > 1:
                 if len(self.feat_sets) > 2:
                     raise NotImplementedError("One-hot probability only implemented for 2 feature sets")
-                onehot_set1_probs = self.feat_probs[:self.feat_sets[0], -1]
-                onehot_set2_probs = self.feat_probs[-1, :self.feat_sets[1]]
-                self.feat_probs = self.feat_probs[:self.feat_sets[0],:self.feat_sets[1]].ravel()
-                self.feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(self.feat_probs.shape[0])]).long()
-                onehot_set1_indices = t.arange(self.feat_sets[0]).repeat_interleave(2).reshape(self.feat_sets[0], 2)
-                onehot_set2_indices = self.feat_sets[0] + t.arange(self.feat_sets[1]).repeat_interleave(2).reshape(self.feat_sets[1], 2)
-                self.feat_probs = t.cat([self.feat_probs.ravel(), onehot_set1_probs, onehot_set2_probs])
-                self.feat_indices = t.cat([self.feat_indices, onehot_set1_indices, onehot_set2_indices], dim=0)
+                flat_feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(np.prod(self.feat_sets))]).long()
+
+                self.feat_indices = t.zeros((self.feat_probs.shape[0], self.feat_probs.shape[1], 2))
+                self.feat_indices[:self.feat_sets[0], :self.feat_sets[1],:] = flat_feat_indices.reshape(self.feat_sets[0], self.feat_sets[1], 2)
+                self.feat_indices[:,-1,0] = self.feat_indices[:,0, 0]
+                self.feat_indices[-1,:,1] = self.feat_indices[0,:,1]
+                self.feat_indices[:,-1,1] = self.feat_indices[:,-1,0]
+                self.feat_indices[-1,:,0] = self.feat_indices[-1,:,1]
+                
+                self.feat_probs = self.feat_probs.ravel()
+                self.feat_indices = self.feat_indices.reshape(-1,2)
+                # print(self.feat_indices[:,:,0])
+                # print(self.feat_indices[:,:,1])
             else:
                 self.feat_probs = self.feat_probs.ravel()
                 self.feat_indices = t.Tensor([(i // self.feat_sets[0], self.feat_sets[0] + i % self.feat_sets[0]) for i in range(self.feat_probs.shape[0])]).long()
@@ -232,9 +236,50 @@ class ComposedFeatureTMS(TMS):
             
         else:
             raise NotImplementedError("ComposedFeatureTMS only implemented for case with <= 2 feature sets")
-        
+        self.print_prob_table()
         self.feat_sampler = t.distributions.categorical.Categorical(self.feat_probs)
 
+
+    def get_prob_table(self):
+        if self.cfg.onehot_probability > 0:
+            return self.feat_probs.reshape([i+1 for i in self.cfg.feat_sets])
+        else:
+            return self.feat_probs.reshape(self.cfg.feat_sets)
+
+    def print_prob_table(self):
+        prob_table = self.get_prob_table()
+        if len(self.cfg.feat_sets) > 2 and len(self.cfg.fet_sets) > 0:
+            raise NotImplementedError("Can only output 1- or 2D probability table")
+
+        xs = [f'y{i+1}' for i in range(self.cfg.feat_sets[0])]
+        header = f'{"":<10s}' + (('{:<10s}')*len(xs)).format(*tuple(xs))
+        if self.cfg.onehot_probability > 0:
+            header += f'{"No yi":<10s}'
+        print(header)
+        if len(self.cfg.feat_sets) == 1:
+            string = f'{"probs:":<10s}' + (('{:<10.4f}')*prob_table.shape[1]).format(*tuple(prob_table))
+            print(string)
+        else:
+            ys = [f'x{i+1}' for i in range(self.cfg.feat_sets[1])]
+            if self.cfg.onehot_probability > 0:
+                ys += [f'{"No xi":<10s}']
+            for y, row in zip(ys, prob_table):
+                string = f'{y:<10s}' + (('{:<10.4f}')*prob_table.shape[1]).format(*tuple(row))
+                print(string)
+
+    def set_prob_table(self, prob_table):
+        #check if it's a valid table
+        if not np.isclose(prob_table.sum().item() - 1, 0, atol=1e-6):
+            raise ValueError("A probability table must sum to 1.")
+
+        if prob_table.numel() != self.feat_probs.numel():
+            raise ValueError(f"Mismatch between probability table and expected size: prob table has {prob_table.size} elements but needs {self.feat_probs.size}")
+
+        self.feat_probs = prob_table.ravel()
+        self.feat_sampler = t.distributions.categorical.Categorical(self.feat_probs)
+        print('setting new probability table:')
+        self.print_prob_table()
+        
     def get_batch(self, batch_size: int = None,
                   identity=False,
                   ) -> Float[Tensor, "batch input_size"]:
