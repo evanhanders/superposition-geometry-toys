@@ -220,10 +220,18 @@ class TMSPlotter():
                 if autoencoder is None:
                     self.im = self.axs[0].imshow(cossim.squeeze(), cmap='RdYlBu_r', vmin=-1, vmax=1)
                 else:
-                    self.im1 = self.axs[0].imshow(cossim.squeeze(), cmap='RdYlBu_r', vmin=-1, vmax=1)
-                    self.im2 = self.axs[1].imshow(actvecs.squeeze(), cmap='viridis', vmin=0, vmax=1)
-                    # self.axs[0].set_xlim(-0.5, min(cossim.shape)-0.5)
-                    # self.axs[1].set_xlim(-0.5, min(actvecs.shape)-0.5)
+                    if model.cfg.feat_sets is not None:
+                        set1, set2 = model.cfg.feat_sets
+                        cols = actvecs.squeeze().shape[1]
+                        self.im1a = self.axs[0].imshow(cossim.squeeze()[:set1], cmap='RdBu_r', vmin=-1, vmax=1)
+                        self.im2a = self.axs[1].imshow(actvecs.squeeze()[:set1], cmap='hot', vmin=0, vmax=1)
+                        self.im1b = self.axs[0].imshow(cossim.squeeze()[set1:], cmap='PuOr_r', vmin=-1, vmax=1, extent=(-0.5, cols-0.5, set1+set2-0.5, set1-0.5))
+                        self.im2b = self.axs[1].imshow(actvecs.squeeze()[set1:], cmap='bone', vmin=0, vmax=1, extent=(-0.5, cols-0.5, set1+set2-0.5, set1-0.5))
+                        self.axs[0].set_ylim(set1+set2 - 0.5, -0.5)
+                        self.axs[1].set_ylim(set1+set2 - 0.5, -0.5)
+                    else:
+                        self.im1 = self.axs[0].imshow(cossim.squeeze(), cmap='RdBu_r', vmin=-1, vmax=1)
+                        self.im2 = self.axs[1].imshow(actvecs.squeeze(), cmap='viridis', vmin=0, vmax=1)
                 self.initialized = True
             else:
                 #Update
@@ -231,9 +239,16 @@ class TMSPlotter():
                     self.im.set_data(cossim.squeeze())
                     self.axs[0].set_xticks(range(len(args)), labels=[a.item() for a in args])
                 else:
-                    self.im1.set_data(cossim.squeeze())
+                    if model.cfg.feat_sets is not None:
+                        set1, set2 = model.cfg.feat_sets
+                        self.im1a.set_data(cossim.squeeze()[:set1])
+                        self.im2a.set_data(actvecs.squeeze()[:set1])
+                        self.im1b.set_data(cossim.squeeze()[set1:])
+                        self.im2b.set_data(actvecs.squeeze()[set1:])
+                    else:
+                        self.im1.set_data(cossim.squeeze())
+                        self.im2.set_data(actvecs.squeeze())
                     self.axs[0].set_xticks(range(args.shape[0]), labels=[a.item() for a in args])
-                    self.im2.set_data(actvecs.squeeze())
                     self.axs[1].set_xticks(range(argsacts.shape[0]), labels=[a.item() for a in argsacts])
                     # self.axs[0].set_xlim(-0.5, min(cossim.shape)-0.5)
                     # self.axs[1].set_xlim(-0.5, min(actvecs.shape)-0.5)
